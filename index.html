@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Marcação de passos</title>
+<style>
+  body{font-family:system-ui,sans-serif;margin:0 auto;padding:16px;background:#111;color:#eee;max-width:720px}
+  h1{font-size:20px;margin:4px 0 12px}
+  h3{font-size:16px;margin:24px 0 6px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
+  button{background:#333;color:#fff;border:1px solid #555;border-radius:8px;padding:10px 14px;font-size:16px}
+  button.primary{background:#2d6cdf;border-color:#2d6cdf}
+  button.active{background:#2d6cdf;border-color:#2d6cdf}
+  input,select,textarea{background:#222;color:#eee;border:1px solid #444;border-radius:6px;padding:8px;font-size:16px}
+  textarea{width:100%;box-sizing:border-box;height:130px;font-family:ui-monospace,monospace;font-size:14px}
+  #track{display:flex;gap:6px;margin:14px 0;min-height:110px}
+  .cell{flex:1 1 0;border:1px solid #444;border-radius:8px;padding:10px 4px;text-align:center;background:#1b1b1b;min-width:0}
+  .cell .n{font-size:28px;font-weight:700}
+  .cell .i{font-size:13px;color:#aaa;min-height:16px;margin-top:4px}
+  .cell.on{background:#2d6cdf;border-color:#6fa0ff}
+  .cell.on .i{color:#fff}
+  #beats{display:flex;gap:6px;margin:8px 0}
+  .dot{flex:1;height:10px;border-radius:5px;background:#333}
+  .dot.on{background:#f5c542}
+  .muted{color:#999;font-size:14px}
+  code{background:#222;padding:1px 4px;border-radius:4px}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<h1>Marcação de passos</h1>
+
+<div class="row">
+  <button id="modeFile" class="active">Arquivo de música</button>
+  <button id="modeMic">Microfone</button>
+</div>
+
+<div id="fileRow" class="row">
+  <input type="file" id="file" accept="audio/*">
+  <button id="detect">Detectar BPM</button>
+</div>
+<audio id="audio" preload="auto"></audio>
+
+<div class="row">
+  <label>BPM <input type="number" id="bpm" value="100" min="40" max="220" style="width:90px"></label>
+  <label>Padrão
+    <select id="preset">
+      <option value="1234">12341234</option>
+      <option value="ssqq">SSQQ (foxtrot)</option>
+      <option value="custom">Personalizado</option>
+    </select>
+  </label>
+</div>
+
+<div class="row">
+  <button class="primary" id="play">▶ Tocar / Ouvir</button>
+  <button id="stop">■ Parar</button>
+  <button id="mark">Marcar "1" agora</button>
+</div>
+<div class="muted" id="status">Escolha um arquivo de música ou use o microfone. Sem nenhum dos dois, a grade segue só o BPM.</div>
+
+<div id="beats"></div>
+<div id="track"></div>
+<div class="muted" id="info"></div>
+
+<h3>Padrões personalizados</h3>
+<p class="muted">Uma linha por passo no formato <code>contagem | tempos | instrução</code>. Os tempos são quantos batimentos o passo dura (lento = 2, rápido = 1). Escolha "Personalizado" acima para usar.</p>
+<textarea id="custom">S | 2 | pé esquerdo à frente
+S | 2 | pé direito ao lado
+Q | 1 | pé esquerdo junto
+Q | 1 | pé direito atrás</textarea>
+
+<script>
+const PRESETS = {
+  "1234": [1,2,3,4,1,2,3,4].map(n => ({l:String(n), d:1, i:""})),
+  "ssqq": [
+    {l:"S", d:2, i:"passo lento"},
+    {l:"S", d:2, i:"passo lento"},
+    {l:"Q", d:1, i:"passo rápido"},
+    {l:"Q", d:1, i:"passo rápido"}
+  ]
+};
+
+const $ = id => document.getElementById(id);
+const audio = $("audio");
+let cells = [], cum = [], cycle = 1;
+let mode = "file";            // "file" ou "mic"
+let running = false;          // animação ativa (música tocando ou microfone ouvindo)
+let base = 0, t0 = 0;         // relógio do modo microfone
+let offset = 0;               // instante (s) em que cai um tempo do grid
+let offsetLocked = false;     // true depois que o usuário marca o "1"
+let hasFile = false, rafId = null;
+let micStream = null, audioCtx = null, analyser = null, buf = null;
+const ring = new Float32Array(1200);  // 12 s de energia, 100 amostras por segundo
+let ringPos = 0, sampleTimer = null, analyzeTimer = null, bpmSmooth = 0;
+
+function esc(s){ return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function mod(a, n){ return ((a % n) + n) % n; }
+
+function parseCustom(){
+  const out = [];
+  for (const line of $("custom").value.split("\n")) {
+    if (!line.trim()) continue;
+    const p = line.split("|").map(s => s.trim());
+    const d = parseFloat(p[1]);
+    out.push({l: p[0] || "?", d: d > 0 ? d : 1, i: p[2] || ""});
+  }
+  return out.length ? out : [{l:"1", d:1, i:""}];
+}
+
+function buildTrack(){
+  const key = $("preset").value;
+  cells = key === "custom" ? parseCustom() : PRESETS[key];
+  cum = [0];
+  for (const c of cells) cum.push(cum[cum.length-1] + c.d);
+  cycle = cum[cum.length-1];
+  $("track").innerHTML = cells.map(c =>
+    `<div class="cell" style="flex-grow:${c.d}"><div class="n">${esc(c.l)}</div><div class="i">${esc(c.i)}</div></div>`
+  ).join("");
+  $("beats").innerHTML = '<div class="dot"></div>'.repeat(4);
+  render();
+}
+
+function clock(){ return running ? base + (performance.now() - t0) / 1000 : base; }
+function now(){ return mode === "file" ? audio.currentTime : clock(); }
+function bpmValue(){ return +$("bpm").value || 100; }
+function beatPos(s){ return (s - offset) * bpmValue() / 60; }
+
+function render(){
+  const bp = beatPos(now());
+  const m = mod(bp, cycle);
+  let idx = 0;
+  for (let k = 0; k < cells.length; k++) if (m >= cum[k]) idx = k;
+  document.querySelectorAll(".cell").forEach((el, k) => el.classList.toggle("on", k === idx));
+  const b4 = Math.floor(mod(bp, 4));
+  document.querySelectorAll(".dot").forEach((el, k) => el.classList.toggle("on", k === b4));
+  const bar = Math.floor(bp / 4) + 1;
+  $("info").textContent = `Compasso ${bar} · tempo ${b4 + 1} de 4 · passo ${cells[idx].l}` +
+    (cells[idx].i ? ` (${cells[idx].i})` : "");
+}
+
+function loop(){
+  render();
+  if (running) rafId = requestAnimationFrame(loop);
+}
+
+/* ---------- Modo arquivo ---------- */
+
+async function detectBpm(){
+  const f = $("file").files[0];
+  if (!f) { $("status").textContent = "Carregue uma música primeiro."; return; }
+  $("status").textContent = "Analisando a música... (pode levar alguns segundos)";
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const decoded = await ctx.decodeAudioData(await f.arrayBuffer());
+    ctx.close();
+    const data = decoded.getChannelData(0);
+    const hop = Math.floor(decoded.sampleRate / 100);
+    const env = [];
+    for (let i = 0; i + hop <= data.length; i += hop) {
+      let s = 0;
+      for (let j = i; j < i + hop; j++) s += Math.abs(data[j]);
+      env.push(s / hop);
+    }
+    const on = new Float32Array(env.length);
+    for (let i = 1; i < env.length; i++) on[i] = Math.max(0, env[i] - env[i-1]);
+    let best = 0, bestLag = 0;
+    const minLag = Math.round(6000 / 200), maxLag = Math.round(6000 / 60);
+    for (let lag = minLag; lag <= maxLag; lag++) {
+      let s = 0;
+      for (let i = lag; i < on.length; i++) s += on[i] * on[i - lag];
+      if (s > best) { best = s; bestLag = lag; }
+    }
+    let bpm = 6000 / bestLag;
+    while (bpm < 90) bpm *= 2;
+    while (bpm >= 180) bpm /= 2;
+    const period = 60 / bpm;
+    let bestP = 0, bestS = -1;
+    for (let p = 0; p < period; p += 0.01) {
+      let s = 0;
+      for (let t = p; t * 100 < on.length; t += period) s += on[Math.round(t * 100)];
+      if (s > bestS) { bestS = s; bestP = p; }
+    }
+    $("bpm").value = Math.round(bpm);
+    offset = bestP;
+    offsetLocked = false;
+    $("status").textContent = `Detectado: ${Math.round(bpm)} BPM. Se o "1" estiver errado, toque em Tocar e use "Marcar 1" no tempo certo.`;
+    render();
+  } catch (err) {
+    $("status").textContent = "Não consegui analisar esse arquivo. Ajuste o BPM manualmente.";
+  }
+}
+
+async function playFile(){
+  if (!hasFile) { $("status").textContent = "Carregue uma música primeiro, ou use o modo Microfone."; return; }
+  try {
+    await audio.play();
+    running = true;
+    loop();
+  } catch (e) {
+    $("status").textContent = "O navegador bloqueou a reprodução. Toque em Tocar de novo.";
+  }
+}
+
+function stopFile(){
+  audio.pause();
+  running = false;
+  cancelAnimationFrame(rafId);
+  render();
+}
+
+/* ---------- Modo microfone ---------- */
+
+async function startMic(){
+  if (running) return;
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = audioCtx.createMediaStreamSource(micStream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    src.connect(analyser);
+    buf = new Float32Array(analyser.fftSize);
+    ring.fill(0); ringPos = 0; bpmSmooth = 0;
+    offsetLocked = false;
+    base = 0; t0 = performance.now();
+    running = true;
+    sampleTimer = setInterval(sampleMic, 10);
+    analyzeTimer = setInterval(analyzeMic, 500);
+    $("status").textContent = "Ouvindo... o BPM aparece em alguns segundos. Quando ouvir o primeiro tempo do compasso, aperte \"Marcar 1\".";
+    loop();
+  } catch (e) {
+    $("status").textContent = "Não consegui acessar o microfone. Confira a permissão do navegador e se a página abriu por um endereço https.";
+  }
+}
+
+function stopMic(){
+  const b = clock();
+  running = false;
+  clearInterval(sampleTimer); clearInterval(analyzeTimer);
+  cancelAnimationFrame(rafId);
+  if (micStream) micStream.getTracks().forEach(t => t.stop());
+  if (audioCtx) audioCtx.close();
+  micStream = null; audioCtx = null;
+  base = b;
+  render();
+}
+
+function sampleMic(){
+  analyser.getFloatTimeDomainData(buf);
+  let s = 0;
+  for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i];
+  ring[ringPos] = Math.sqrt(s / buf.length);
+  ringPos = (ringPos + 1) % ring.length;
+}
+
+function analyzeMic(){
+  const N = ring.length;
+  const arr = new Float32Array(N);
+  for (let i = 0; i < N; i++) arr[i] = ring[(ringPos + i) % N];
+  const on = new Float32Array(N);
+  let energy = 0;
+  for (let i = 1; i < N; i++) { on[i] = Math.max(0, arr[i] - arr[i-1]); energy += on[i]; }
+  if (energy < 1e-4) return;                       // silêncio: não estima nada
+  let best = 0, bestLag = 0;
+  for (let lag = 30; lag <= 100; lag++) {          // 60 a 200 BPM
+    let s = 0;
+    for (let i = lag; i < N; i++) s += on[i] * on[i - lag];
+    if (s > best) { best = s; bestLag = lag; }
+  }
+  if (!bestLag) return;
+  let bpm = 6000 / bestLag;
+  while (bpm < 90) bpm *= 2;
+  while (bpm >= 180) bpm /= 2;
+  bpmSmooth = bpmSmooth ? 0.8 * bpmSmooth + 0.2 * bpm : bpm;
+  $("bpm").value = Math.round(bpmSmooth);
+  if (!offsetLocked) {
+    const period = 60 / bpmSmooth;
+    const bins = new Float32Array(100);
+    const c = clock();
+    for (let j = 0; j < N; j++) {
+      if (!on[j]) continue;
+      const tj = c - (N - 1 - j) / 100;
+      const ph = mod(tj, period) / period;
+      bins[Math.min(99, Math.floor(ph * 100))] += on[j];
+    }
+    let bb = 0;
+    for (let b = 1; b < 100; b++) if (bins[b] > bins[bb]) bb = b;
+    offset = ((bb + 0.5) / 100) * period;
+  }
+}
+
+/* ---------- Controles ---------- */
+
+function setMode(m){
+  if (running) { mode === "file" ? stopFile() : stopMic(); }
+  mode = m;
+  $("modeFile").classList.toggle("active", m === "file");
+  $("modeMic").classList.toggle("active", m === "mic");
+  $("fileRow").classList.toggle("hidden", m !== "file");
+  $("status").textContent = m === "file"
+    ? "Carregue uma música e toque em Detectar BPM."
+    : "Toque em Tocar / Ouvir para escutar a música que está tocando perto do aparelho.";
+  render();
+}
+
+$("modeFile").addEventListener("click", () => setMode("file"));
+$("modeMic").addEventListener("click", () => setMode("mic"));
+
+$("file").addEventListener("change", e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    audio.src = URL.createObjectURL(f);
+    hasFile = true;
+    offset = 0; offsetLocked = false;
+    audio.currentTime = 0;
+    $("status").textContent = `Música carregada: ${f.name}. Toque em Detectar BPM ou ajuste o BPM e depois aperte "Marcar 1".`;
+  } catch (err) {
+    $("status").textContent = "Não consegui carregar esse arquivo.";
+  }
+  render();
+});
+
+$("detect").addEventListener("click", detectBpm);
+
+$("play").addEventListener("click", () => {
+  if (mode === "file") playFile(); else startMic();
+});
+$("stop").addEventListener("click", () => {
+  if (mode === "file") stopFile(); else stopMic();
+});
+$("mark").addEventListener("click", () => {
+  offset = now();
+  offsetLocked = true;
+  $("status").textContent = `"1" marcado em ${offset.toFixed(2)} s. A grade acompanha a partir daqui.`;
+  render();
+});
+
+$("preset").addEventListener("change", buildTrack);
+$("custom").addEventListener("input", buildTrack);
+$("bpm").addEventListener("input", render);
+audio.addEventListener("ended", () => { running = false; cancelAnimationFrame(rafId); render(); });
+
+buildTrack();
+</script>
+</body>
+</html>
