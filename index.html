@@ -26,6 +26,7 @@
   .muted{color:#999;font-size:14px}
   code{background:#222;padding:1px 4px;border-radius:4px}
   .hidden{display:none}
+  #wave{width:100%;height:150px;background:#0b0b0b;border-radius:8px;display:block;touch-action:manipulation}
 </style>
 </head>
 <body>
@@ -63,6 +64,8 @@
 <div class="muted" id="status">Escolha um arquivo de música ou use o microfone. Sem nenhum dos dois, a grade segue só o BPM.</div>
 
 <div id="beats"></div>
+<div class="row"><label>Zoom <select id="zoom"><option value="8" selected>8 s</option><option value="20">20 s</option><option value="0">Tudo</option></select></label><span class="muted">Toque na onda no ponto do primeiro tempo para marcar o "1"</span></div>
+<canvas id="wave"></canvas>
 <div id="track"></div>
 <div class="muted" id="info"></div>
 
@@ -140,6 +143,7 @@ function render(){
   const bar = Math.floor(bp / 4) + 1;
   $("info").textContent = `Compasso ${bar} · tempo ${b4 + 1} de 4 · passo ${cells[idx].l}` +
     (cells[idx].i ? ` (${cells[idx].i})` : "");
+  drawWave();
 }
 
 function loop(){
@@ -318,6 +322,8 @@ $("file").addEventListener("change", e => {
   try {
     audio.src = URL.createObjectURL(f);
     hasFile = true;
+    peaks = null;
+    loadWave(f).catch(() => { peaks = null; render(); });
     offset = 0; offsetLocked = false;
     audio.currentTime = 0;
     $("status").textContent = `Música carregada: ${f.name}. Toque em Detectar BPM ou ajuste o BPM e depois aperte "Marcar 1".`;
@@ -355,6 +361,93 @@ $("double").addEventListener("click", () => {
   $("bpm").value = Math.round((+$("bpm").value || 100) * 2);
   render();
 });
+
+
+let peaks = null, dur = 0, lastView = {s: 0, e: 30, W: 1};
+const PEAK_RATE = 200; // amostras de pico por segundo
+
+async function loadWave(f){
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const dec = await ctx.decodeAudioData(await f.arrayBuffer());
+  ctx.close();
+  const data = dec.getChannelData(0);
+  const hop = Math.floor(dec.sampleRate / PEAK_RATE);
+  const n = Math.floor(data.length / hop);
+  const p = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let m = 0;
+    for (let j = i * hop, end = j + hop; j < end; j++) { const v = Math.abs(data[j]); if (v > m) m = v; }
+    p[i] = m;
+  }
+  peaks = p; dur = dec.duration;
+  render();
+}
+
+function viewWindow(){
+  const z = +$("zoom").value;
+  const c = now();
+  const w = z > 0 ? z : (peaks ? dur : 30);
+  let s = c - w / 2;
+  if (peaks) s = Math.min(Math.max(0, s), Math.max(0, dur - w));
+  return {s, e: s + w, w};
+}
+
+function drawWave(){
+  const cv = $("wave");
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (!W || !H) return;
+  if (cv.width !== Math.round(W * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  const {s, e, w} = viewWindow();
+  lastView = {s, e, W};
+
+  if (peaks) {
+    g.fillStyle = "#3a6bd1";
+    for (let x = 0; x < W; x++) {
+      const i0 = Math.floor((s + x / W * w) * PEAK_RATE);
+      const i1 = Math.max(i0 + 1, Math.floor((s + (x + 1) / W * w) * PEAK_RATE));
+      let m = 0;
+      for (let i = Math.max(0, i0); i < i1 && i < peaks.length; i++) if (peaks[i] > m) m = peaks[i];
+      const h = Math.max(1, m * H * 0.9);
+      g.fillRect(x, (H - h) / 2, 1, h);
+    }
+  }
+
+  const period = 60 / bpmValue();
+  const kStart = Math.ceil((s - offset) / period), kEnd = Math.floor((e - offset) / period);
+  const pxBeat = period / w * W;
+  g.font = "12px system-ui, sans-serif";
+  for (let k = kStart; k <= kEnd; k++) {
+    const x = (offset + k * period - s) / w * W;
+    const bar = mod(k, 4) === 0;
+    g.strokeStyle = bar ? "#f5c542" : "#555";
+    g.lineWidth = bar ? 2 : 1;
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke();
+    if (pxBeat >= 16) {
+      const m = mod(k, cycle);
+      const idx = cum.slice(0, cells.length).findIndex(v => Math.abs(v - m) < 0.01);
+      g.fillStyle = idx >= 0 ? "#fff" : "#888";
+      g.fillText(idx >= 0 ? cells[idx].l : String(mod(k, 4) + 1), x + 3, 14);
+    }
+  }
+
+  const xp = (now() - s) / w * W;
+  g.strokeStyle = "#ff5c5c"; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(xp, 0); g.lineTo(xp, H); g.stroke();
+}
+
+$("wave").addEventListener("click", ev => {
+  const r = $("wave").getBoundingClientRect();
+  const x = ev.clientX - r.left;
+  offset = lastView.s + (x / lastView.W) * (lastView.e - lastView.s);
+  offsetLocked = true;
+  $("status").textContent = `"1" marcado em ${offset.toFixed(2)} s. A grade acompanha a partir daqui.`;
+  render();
+});
+$("zoom").addEventListener("change", render);
 
 buildTrack();
 </script>
