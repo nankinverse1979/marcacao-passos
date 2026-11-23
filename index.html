@@ -44,6 +44,8 @@
 
 <div class="row">
   <label>BPM <input type="number" id="bpm" value="100" min="40" max="220" style="width:90px"></label>
+  <button id="half">÷2</button>
+  <button id="double">×2</button>
   <label>Padrão
     <select id="preset">
       <option value="1234">12341234</option>
@@ -344,6 +346,15 @@ $("preset").addEventListener("change", buildTrack);
 $("custom").addEventListener("input", buildTrack);
 $("bpm").addEventListener("input", render);
 audio.addEventListener("ended", () => { running = false; cancelAnimationFrame(rafId); render(); });
+
+$("half").addEventListener("click", () => {
+  $("bpm").value = Math.max(1, Math.round((+$("bpm").value || 100) / 2));
+  render();
+});
+$("double").addEventListener("click", () => {
+  $("bpm").value = Math.round((+$("bpm").value || 100) * 2);
+  render();
+});
 
 buildTrack();
 </script>
