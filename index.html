@@ -158,6 +158,50 @@ function loop(){
 
 /* ---------- Modo arquivo ---------- */
 
+// Picos de ataque: cada pico é um instante de batida forte (índice em 100 quadros por segundo)
+function findPeaks(on){
+  let mx = 0;
+  for (const v of on) if (v > mx) mx = v;
+  const thr = mx * 0.25;
+  const peaks = [];
+  let last = -100;
+  for (let i = 1; i < on.length - 1; i++) {
+    if (on[i] > thr && on[i] >= on[i-1] && on[i] > on[i+1] && i - last >= 8) {
+      peaks.push({t: i / 100, w: on[i]});
+      last = i;
+    }
+  }
+  return peaks;
+}
+
+// Ajusta a grade (andamento e início) para passar pelos picos ao longo da música inteira
+function refineGrid(on, bpm, phase){
+  let period = 60 / bpm, a = phase;
+  const peaks = findPeaks(on);
+  for (let iter = 0; iter < 3; iter++) {
+    const pts = [];
+    for (const p of peaks) {
+      const k = Math.round((p.t - a) / period);
+      const r = p.t - (a + k * period);
+      if (Math.abs(r) < period * 0.2) pts.push({k, t: p.t, w: p.w});
+    }
+    if (pts.length < 8) break;
+    // mínimos quadrados ponderados: tempo = a + period * k
+    let W = 0, Sk = 0, St = 0, Skk = 0, Skt = 0;
+    for (const q of pts) {
+      W += q.w; Sk += q.w * q.k; St += q.w * q.t;
+      Skk += q.w * q.k * q.k; Skt += q.w * q.k * q.t;
+    }
+    const den = W * Skk - Sk * Sk;
+    if (Math.abs(den) < 1e-9) break;
+    const b = (W * Skt - Sk * St) / den;
+    const aa = (St - b * Sk) / W;
+    if (b <= 0) break;
+    period = b; a = aa;
+  }
+  return {bpm: 60 / period, offset: a, peaks: peaks.length};
+}
+
 async function detectBpm(){
   const f = $("file").files[0];
   if (!f) { $("status").textContent = "Carregue uma música primeiro."; return; }
@@ -193,10 +237,11 @@ async function detectBpm(){
       for (let t = p; t * 100 < on.length; t += period) s += on[Math.round(t * 100)];
       if (s > bestS) { bestS = s; bestP = p; }
     }
-    $("bpm").value = Math.round(bpm);
-    offset = bestP;
+    const refined = refineGrid(on, bpm, bestP);
+    $("bpm").value = Math.round(refined.bpm * 10) / 10;
+    offset = refined.offset;
     offsetLocked = false;
-    $("status").textContent = `Detectado: ${Math.round(bpm)} BPM. Se o "1" estiver errado, toque em Tocar e use "Marcar 1" no tempo certo.`;
+    $("status").textContent = `Detectado: ${(Math.round(refined.bpm * 10) / 10)} BPM, alinhado a ${refined.peaks} picos. Se o "1" estiver errado, toque em Tocar e use "Marcar 1" no tempo certo.`;
     render();
   } catch (err) {
     $("status").textContent = "Não consegui analisar esse arquivo. Ajuste o BPM manualmente.";
