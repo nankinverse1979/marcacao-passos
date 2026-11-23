@@ -66,7 +66,7 @@
 
 <div id="beats"></div>
 <div class="row"><label>Ajuste fino <input type="range" id="nudge" min="-200" max="200" value="0" step="5"></label><span class="muted" id="nudgeVal">0 ms</span></div>
-<div class="row"><label>Zoom <select id="zoom"><option value="8" selected>8 s</option><option value="20">20 s</option><option value="0">Tudo</option></select></label><span class="muted">Toque na onda no ponto do primeiro tempo para marcar o "1"</span></div>
+<div class="row"><label>Zoom <select id="zoom"><option value="2">2 compassos</option><option value="4" selected>4 compassos</option><option value="8">8 compassos</option><option value="16">16 compassos</option><option value="0">Tudo</option></select></label><span class="muted">Toque na onda no ponto do primeiro tempo para marcar o "1"</span></div>
 <canvas id="wave"></canvas>
 <div class="row"><label style="flex:1">Posição na música <input type="range" id="scroll" min="0" max="1000" value="0" style="width:100%"></label></div>
 <div id="track"></div>
@@ -431,7 +431,7 @@ async function loadWave(f){
 function viewWindow(){
   const z = +$("zoom").value;
   const c = now();
-  const w = z > 0 ? z : (peaks ? dur : 30);
+  const w = z > 0 ? z * 4 * 60 / bpmValue() : (peaks ? dur : 30); // z = número de compassos
   let s = manualView !== null && peaks ? manualView : c - w / 2;
   if (peaks) s = Math.min(Math.max(0, s), Math.max(0, dur - w));
   return {s, e: s + w, w};
