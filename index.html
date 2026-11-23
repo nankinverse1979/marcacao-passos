@@ -378,6 +378,7 @@ $("file").addEventListener("change", e => {
     loadWave(f).catch(() => { peaks = null; render(); });
     offset = 0; offsetLocked = false; countStarted = false;
     audio.currentTime = 0;
+    detectBpm(); // analisa o arquivo assim que ele é carregado
     $("status").textContent = `Música carregada: ${f.name}. Toque em Detectar BPM ou ajuste o BPM e depois aperte "Marcar 1".`;
   } catch (err) {
     $("status").textContent = "Não consegui carregar esse arquivo.";
