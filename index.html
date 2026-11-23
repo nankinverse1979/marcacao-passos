@@ -60,6 +60,14 @@
 
 <div class="row">
   <button class="primary" id="play">▶ Tocar / Ouvir</button>
+  <button id="rewind">⏮ Início</button>
+  <label>Velocidade <select id="speed">
+    <option value="0.5">0,5x</option>
+    <option value="0.75">0,75x</option>
+    <option value="1" selected>1x</option>
+    <option value="1.25">1,25x</option>
+    <option value="1.5">1,5x</option>
+  </select></label>
   <button id="start" class="primary">Comecei a dança</button>
 </div>
 <div class="muted" id="status">Escolha um arquivo de música ou use o microfone. Sem nenhum dos dois, a grade segue só o BPM.</div>
@@ -378,6 +386,7 @@ $("file").addEventListener("change", e => {
     loadWave(f).catch(() => { peaks = null; render(); });
     offset = 0; offsetLocked = false; countStarted = false;
     audio.currentTime = 0;
+    audio.playbackRate = +$("speed").value;
     detectBpm(); // analisa o arquivo assim que ele é carregado
     $("status").textContent = `Música carregada: ${f.name}. Toque em Detectar BPM ou ajuste o BPM e depois aperte "Marcar 1".`;
   } catch (err) {
@@ -514,6 +523,19 @@ $("start").addEventListener("click", () => {
   $("status").textContent = "Começou! Os números aparecem a partir de agora.";
   render();
 });
+
+
+$("rewind").addEventListener("click", () => {
+  if (mode === "file") {
+    audio.currentTime = 0;
+  } else {
+    base = 0;
+    t0 = performance.now();
+  }
+  render();
+});
+// A grade é calculada no tempo da música, então ela continua alinhada em qualquer velocidade
+$("speed").addEventListener("change", () => { audio.playbackRate = +$("speed").value; });
 
 buildTrack();
 </script>
