@@ -60,13 +60,12 @@
 
 <div class="row">
   <button class="primary" id="play">▶ Tocar / Ouvir</button>
-  <button id="stop">■ Parar</button>
-  <button id="mark">Marcar "1" agora</button>
   <button id="start" class="primary">Comecei a dança</button>
 </div>
 <div class="muted" id="status">Escolha um arquivo de música ou use o microfone. Sem nenhum dos dois, a grade segue só o BPM.</div>
 
 <div id="beats"></div>
+<div class="row"><label>Ajuste fino <input type="range" id="nudge" min="-200" max="200" value="0" step="5"></label><span class="muted" id="nudgeVal">0 ms</span></div>
 <div class="row"><label>Zoom <select id="zoom"><option value="8" selected>8 s</option><option value="20">20 s</option><option value="0">Tudo</option></select></label><span class="muted">Toque na onda no ponto do primeiro tempo para marcar o "1"</span></div>
 <canvas id="wave"></canvas>
 <div id="track"></div>
@@ -133,7 +132,8 @@ function buildTrack(){
 function clock(){ return running ? base + (performance.now() - t0) / 1000 : base; }
 function now(){ return mode === "file" ? audio.currentTime : clock(); }
 function bpmValue(){ return +$("bpm").value || 100; }
-function beatPos(s){ return (s - offset) * bpmValue() / 60; }
+function gridOffset(){ return offset + (+$("nudge").value) / 1000; }
+function beatPos(s){ return (s - gridOffset()) * bpmValue() / 60; }
 
 function render(){
   const bp = beatPos(now());
@@ -143,6 +143,7 @@ function render(){
   document.querySelectorAll(".cell").forEach((el, k) => el.classList.toggle("on", countStarted && k === idx));
   const b4 = Math.floor(mod(bp, 4));
   document.querySelectorAll(".dot").forEach((el, k) => el.classList.toggle("on", k === b4));
+  $("play").textContent = running ? "■ Parar" : "▶ Tocar / Ouvir";
   const bar = Math.floor(bp / 4) + 1;
   $("track").classList.toggle("muted-track", !countStarted);
   $("info").textContent = countStarted
@@ -386,16 +387,8 @@ $("file").addEventListener("change", e => {
 $("detect").addEventListener("click", detectBpm);
 
 $("play").addEventListener("click", () => {
-  if (mode === "file") playFile(); else startMic();
-});
-$("stop").addEventListener("click", () => {
-  if (mode === "file") stopFile(); else stopMic();
-});
-$("mark").addEventListener("click", () => {
-  offset = now();
-  offsetLocked = true; countStarted = true;
-  $("status").textContent = `"1" marcado em ${offset.toFixed(2)} s. A grade acompanha a partir daqui.`;
-  render();
+  if (running) { if (mode === "file") stopFile(); else stopMic(); }
+  else { if (mode === "file") playFile(); else startMic(); }
 });
 
 $("preset").addEventListener("change", buildTrack);
@@ -467,11 +460,12 @@ function drawWave(){
   }
 
   const period = 60 / bpmValue();
-  const kStart = Math.ceil((s - offset) / period), kEnd = Math.floor((e - offset) / period);
+  const go = gridOffset();
+  const kStart = Math.ceil((s - go) / period), kEnd = Math.floor((e - go) / period);
   const pxBeat = period / w * W;
   g.font = "12px system-ui, sans-serif";
   for (let k = kStart; k <= kEnd; k++) {
-    const x = (offset + k * period - s) / w * W;
+    const x = (go + k * period - s) / w * W;
     const bar = mod(k, 4) === 0;
     g.strokeStyle = bar ? "#f5c542" : "#555";
     g.lineWidth = bar ? 2 : 1;
@@ -498,6 +492,7 @@ $("wave").addEventListener("click", ev => {
   render();
 });
 $("zoom").addEventListener("change", render);
+$("nudge").addEventListener("input", () => { $("nudgeVal").textContent = $("nudge").value + " ms"; render(); });
 
 
 let countStarted = false;
